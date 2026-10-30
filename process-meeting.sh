@@ -62,8 +62,20 @@ if [ -z "$TRANSCRIPT_FILE" ]; then
 fi
 
 if [ -z "$TRANSCRIPT_FILE" ] || [ ! -f "$TRANSCRIPT_FILE" ]; then
-    echo "Error: no transcript found. Usage: ./process-meeting.sh [file.md]"
+    echo "Error: no transcript found. Usage: ./process-meeting.sh [note.md] [transcript.txt]"
     exit 1
+fi
+
+# The note only holds a summary, so the transcript has to be sent with it.
+# It comes from the second argument, or from the note's transcript_file field.
+FULL_TRANSCRIPT="${2:-}"
+if [ -z "$FULL_TRANSCRIPT" ]; then
+    TRANSCRIPT_NAME=$(sed -n 's/^transcript_file: "\(.*\)"$/\1/p' "$TRANSCRIPT_FILE")
+    FULL_TRANSCRIPT="$REPO_DIR/transcripts/$TRANSCRIPT_NAME"
+fi
+if [ ! -f "$FULL_TRANSCRIPT" ]; then
+    FULL_TRANSCRIPT=""
+    echo "⚠ No transcript file found, using only the contents of the note"
 fi
 
 echo "→ Processing: $(basename "$TRANSCRIPT_FILE")"
@@ -123,7 +135,7 @@ Then, IF the folder is a meeting folder, use these sections:
 - [ ] action (owner if mentioned)
 
 ## Full transcript
-<verbatim transcript>
+<verbatim transcript, copied from the input below>
 
 Then, IF the folder is a class folder, use these sections INSTEAD:
 
@@ -140,15 +152,26 @@ Then, IF the folder is a class folder, use these sections INSTEAD:
 - [ ] task, reading or exercise assigned. If none: \"None assigned.\"
 
 ## Full transcript
-<verbatim transcript>
+<verbatim transcript, copied from the input below>
 
 ---
+Use only the input below. Do not read any other file. Never invent or
+summarize transcript text. If the input has no transcript, write \"Not available.\"
+under the transcript heading.
+
 TRANSCRIPT TO PROCESS:
 "
 
 # Piped through stdin: a single argv entry is capped at 128 KiB on Linux, which
 # a long meeting can exceed.
-RESPONSE=$( { printf '%s\n' "$PROMPT"; cat "$TRANSCRIPT_FILE"; } | claude -p )
+RESPONSE=$( {
+    printf '%s\n' "$PROMPT"
+    cat "$TRANSCRIPT_FILE"
+    if [ -n "$FULL_TRANSCRIPT" ]; then
+        printf '\n\n--- FULL TRANSCRIPT ---\n'
+        cat "$FULL_TRANSCRIPT"
+    fi
+} | claude -p )
 
 # Parse header lines
 FOLDER=$(printf '%s\n' "$RESPONSE" | sed -n '/^FOLDER:/{s/^FOLDER:[[:space:]]*//;s/[[:space:]]*$//;p;q}')

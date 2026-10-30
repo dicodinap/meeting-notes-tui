@@ -16,15 +16,14 @@ from textual.widgets import Static, Label, ListView, ListItem, Footer, Input, Bu
 from textual.binding import Binding
 from textual.reactive import reactive
 from textual.screen import Screen, ModalScreen
-from textual import work
 
 from meeting_notes.recorder import AudioRecorder, list_active_sink_inputs
-from meeting_notes.transcriber import WhisperTranscriber
-from meeting_notes.note_maker import NoteMaker
 from meeting_notes.config import load_config, save_config, AppConfig, validate_config
 from meeting_notes.settings import SettingsScreen
 from meeting_notes.logger import setup_logging, get_logger
 from meeting_notes.level_meter import MicLevelMeter
+from meeting_notes.jobs import DONE, FAILED, JobStore, expired_recordings
+from meeting_notes.worker import start_worker, worker_running
 from meeting_notes.audio_test_screen import AudioTestScreen
 
 # Initialize logging
@@ -739,6 +738,7 @@ class MeetingNotesApp(App):
         Binding("T", "manage_tags", "Tags", show=True),
         Binding("comma", "open_settings", "Settings", show=True),
         Binding("A", "audio_test", "Audio Test", show=True),
+        Binding("R", "retry_failed", "Retry Failed", show=True),
         Binding("q", "quit", "Quit", show=True),
     ]
     
@@ -757,27 +757,6 @@ class MeetingNotesApp(App):
         
         # Initialize components with config values
         self.recorder: Optional[AudioRecorder] = None
-        self.transcriber = WhisperTranscriber(
-            self.config.whisper_model,
-            device=self.config.whisper_device,
-        )
-        
-        # Get appropriate API key based on provider (check config first, then env vars)
-        api_key = None
-        if self.config.ai_provider == "openai":
-            api_key = self.config.openai_api_key or os.getenv("OPENAI_API_KEY")
-        elif self.config.ai_provider == "anthropic":
-            api_key = self.config.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
-        elif self.config.ai_provider == "openrouter":
-            api_key = self.config.openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
-        
-        self.note_maker = NoteMaker(
-            output_dir=self.config.notes_dir,
-            transcripts_dir=self.config.transcripts_dir,
-            ai_provider=self.config.ai_provider,
-            ai_model=self.config.ai_model,
-            api_key=api_key
-        )
         self.notes_dir = Path(self.config.notes_dir).expanduser()
         self.notes_dir.mkdir(parents=True, exist_ok=True)
         self.is_recording = False
@@ -812,6 +791,12 @@ class MeetingNotesApp(App):
         # meeting.
         self._warned_misrouted_apps: set[str] = set()
 
+        # Recordings waiting for a note, shared with the background worker
+        self.jobs = JobStore()
+        self._job_statuses: dict[str, str] = {}
+        self._failed_jobs = 0
+        self._processing = False
+
         # Clean up old recordings on startup
         self._cleanup_old_recordings()
 
@@ -819,23 +804,18 @@ class MeetingNotesApp(App):
         """Delete .wav recordings older than recording_retention_days.
 
         No-op if retention_days <= 0 or the recordings dir doesn't exist.
+        Recordings that have no finished note yet are always kept.
         Errors are logged but not raised — cleanup is best-effort.
         """
         retention_days = getattr(self.config, "recording_retention_days", 0)
-        if retention_days <= 0:
-            return
         recordings_dir = Path(self.config.recordings_dir).expanduser()
-        if not recordings_dir.is_dir():
-            return
-        cutoff = datetime.now() - timedelta(days=retention_days)
-        for wav_file in recordings_dir.glob("*.wav"):
+        for wav_file in expired_recordings(recordings_dir, retention_days, self.jobs.unfinished_paths()):
             try:
-                if datetime.fromtimestamp(wav_file.stat().st_mtime) < cutoff:
-                    logger.info(
-                        f"Removing old recording: {wav_file.name} "
-                        f"(older than {retention_days} days)"
-                    )
-                    wav_file.unlink()
+                logger.info(
+                    f"Removing old recording: {wav_file.name} "
+                    f"(older than {retention_days} days)"
+                )
+                wav_file.unlink()
             except Exception as e:
                 logger.warning(f"Failed to remove {wav_file.name}: {e}")
 
@@ -879,6 +859,9 @@ class MeetingNotesApp(App):
         
         # Clear status file on startup
         self._write_status_file("idle")
+
+        self._resume_jobs()
+        self.set_interval(5, self._poll_jobs)
         
         # Show empty state
         viewer = self.query_one("#note-viewer", NoteViewer)
@@ -1001,6 +984,8 @@ class MeetingNotesApp(App):
             # Hide from the footer while recording — running the test mid-meeting
             # would fight the recorder for the same source.
             return not self.is_recording
+        elif action == "retry_failed":
+            return self._failed_jobs > 0
         return True  # All other actions always available
     
     def update_recording_timer(self) -> None:
@@ -1465,81 +1450,87 @@ class MeetingNotesApp(App):
                 self.refresh_bindings()
                 
                 # Process in background
-                self.notify("Processing recording...", severity="information")
-                self.process_recording(audio_path, meeting_title, user_notes)
+                self._queue_recording(audio_path, meeting_title, user_notes)
                 
             except Exception as e:
                 logger.error(f"Failed to stop recording: {e}", exc_info=True)
                 self.notify(f"Failed to stop recording: {e}", severity="error")
                 self.is_recording = False
     
-    def _notify_safe(self, message: str, severity: str = "information") -> None:
-        """Call self.notify from a thread, ignoring errors if the app is no longer running."""
-        try:
-            self.call_from_thread(self.notify, message, severity=severity)
-        except RuntimeError:
-            logger.info(f"[headless] {message}")
+    def _queue_recording(self, audio_path: str, meeting_title: Optional[str], user_notes: str) -> None:
+        """Save the recording to the job queue and hand it to the background worker."""
+        if not audio_path or not Path(audio_path).exists():
+            logger.error(f"No recording to process: {audio_path!r}")
+            self.notify("No audio was saved for this recording", severity="error")
+            self._write_status_file("idle")
+            return
+        self.jobs.add(audio_path, meeting_title, user_notes)
+        start_worker()
+        self.notify(
+            "Processing in the background. It keeps running if you quit.",
+            severity="information",
+        )
+        self._poll_jobs()
 
-    @work(exclusive=True, thread=True)
-    def process_recording(self, audio_path: str, meeting_title: Optional[str] = None, user_notes: str = "") -> None:
-        """Process recording in background thread."""
-        logger.info(f"Processing recording: {audio_path}")
-        try:
-            # Load Whisper model (if not already loaded)
-            logger.info("Loading Whisper model")
-            self._notify_safe(f"Loading Whisper {self.config.whisper_model} model...")
-            self.transcriber.load_model()
-
-            # Transcribe
-            logger.info("Starting transcription")
-            self._notify_safe("Transcribing audio (this may take a few minutes)...")
-            result = self.transcriber.transcribe(audio_path)
-
-            word_count = len(result.text.split())
-            logger.info(f"Transcription complete: {word_count} words")
-            self._notify_safe(f"✓ Transcribed {word_count} words. Generating AI summary...")
-
-            # Format transcript
-            formatted = '\n\n'.join([
-                f'**[{int(seg.start // 60):02d}:{int(seg.start % 60):02d}]** {seg.text.strip()}'
-                for seg in result.segments
-            ])
-
-            # Generate note with AI summary (pass custom title if provided)
-            logger.info("Creating note with AI summary")
-            duration = result.segments[-1].end if result.segments else 0
-            note_path, transcript_path, ai_error = self.note_maker.create_note(
-                transcript_text=result.text,
-                formatted_transcript=formatted,
-                duration=duration,
-                title=meeting_title,
-                user_notes=user_notes
+    def _resume_jobs(self) -> None:
+        """Pick up where the last session left off."""
+        jobs = self.jobs.all()
+        self._job_statuses = {job.audio_path: job.status for job in jobs}
+        self._failed_jobs = sum(job.status == FAILED for job in jobs)
+        unfinished = sum(job.status not in (DONE, FAILED) for job in jobs)
+        if unfinished:
+            self.notify(f"Resuming {unfinished} unprocessed recording(s)", severity="information")
+            start_worker()
+        if self._failed_jobs:
+            self.notify(
+                f"{self._failed_jobs} recording(s) failed. Press R to retry.",
+                severity="warning",
             )
+        self.refresh_bindings()
+        self._poll_jobs()
 
-            # Update UI
-            if ai_error:
-                logger.warning(f"Note created but AI summarization failed: {ai_error}")
-                self._notify_safe(f"⚠ Note created but {ai_error}", severity="warning")
-                self._notify_safe("Check ~/.config/meeting-notes/errors.log for details", severity="warning")
-            else:
-                logger.info(f"Note created successfully: {note_path}")
-                logger.info(f"Transcript saved: {transcript_path}")
-                self._notify_safe(f"✓ Note created: {Path(note_path).name}")
-            try:
-                self.call_from_thread(self.load_meetings)
-            except RuntimeError:
-                pass
+    def _poll_jobs(self) -> None:
+        """Reflect the worker's progress, which happens in another process."""
+        jobs = self.jobs.all()
+        for job in jobs:
+            if job.status == self._job_statuses.get(job.audio_path):
+                continue
+            self._job_statuses[job.audio_path] = job.status
+            if job.status == DONE:
+                self.notify(f"✓ Note created: {Path(job.note_path).name}")
+                self.load_meetings()
+            elif job.status == FAILED:
+                self.notify(f"Error processing: {job.error}", severity="error")
+                # The note may exist even if the pipeline failed afterwards
+                self.load_meetings()
 
-            # Clear status back to idle after successful processing
-            self._write_status_file("idle")
+        failed = sum(job.status == FAILED for job in jobs)
+        if failed != self._failed_jobs:
+            self._failed_jobs = failed
+            self.refresh_bindings()
 
-        except Exception as e:
-            logger.error(f"Error processing recording: {e}", exc_info=True)
-            self._notify_safe(f"Error processing: {e}", severity="error")
+        unfinished = [job for job in jobs if job.status not in (DONE, FAILED)]
+        if unfinished and not worker_running():
+            start_worker()
 
-            # Clear status back to idle after error
-            self._write_status_file("idle")
-    
+        processing = bool(unfinished)
+        if processing != self._processing:
+            self._processing = processing
+            self.sub_title = (
+                f"Processing {len(unfinished)} recording(s)" if processing
+                else "Keyboard-driven meeting recorder"
+            )
+            if not self.is_recording:
+                self._write_status_file("processing" if processing else "idle")
+
+    def action_retry_failed(self) -> None:
+        """Queue failed recordings again."""
+        count = self.jobs.retry_failed()
+        if count:
+            start_worker()
+            self.notify(f"Retrying {count} recording(s)", severity="information")
+        self._poll_jobs()
+
     def _open_in_new_terminal(self, editor: str, file_path: str) -> bool:
         """
         Open editor in a new terminal window.
@@ -2028,28 +2019,8 @@ class MeetingNotesApp(App):
             # Settings were saved, reload config and components
             self.config = new_config
             
-            # Reinitialize components with new config
-            self.transcriber = WhisperTranscriber(
-                self.config.whisper_model,
-                device=self.config.whisper_device,
-            )
-            
-            # Get appropriate API key based on provider (check config first, then env vars)
-            api_key = None
-            if self.config.ai_provider == "openai":
-                api_key = self.config.openai_api_key or os.getenv("OPENAI_API_KEY")
-            elif self.config.ai_provider == "anthropic":
-                api_key = self.config.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
-            elif self.config.ai_provider == "openrouter":
-                api_key = self.config.openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
-            
-            self.note_maker = NoteMaker(
-                output_dir=self.config.notes_dir,
-                transcripts_dir=self.config.transcripts_dir,
-                ai_provider=self.config.ai_provider,
-                ai_model=self.config.ai_model,
-                api_key=api_key
-            )
+            # Reinitialize components with new config. The worker reads the
+            # config itself each time it starts.
             self.notes_dir = Path(self.config.notes_dir).expanduser()
             self.notes_dir.mkdir(parents=True, exist_ok=True)
             
@@ -2094,3 +2065,7 @@ def run(dev_mode: bool = False):
 
     app = MeetingNotesApp(dev_mode=dev_mode)
     app.run()
+
+    unfinished = [job for job in app.jobs.all() if job.status not in (DONE, FAILED)]
+    if unfinished:
+        print(f"Still processing {len(unfinished)} recording(s) in the background.")

@@ -111,7 +111,8 @@ class NoteMaker:
         duration: float,
         title: Optional[str] = None,
         metadata: Optional[dict] = None,
-        user_notes: str = ""
+        user_notes: str = "",
+        date: Optional[datetime] = None
     ) -> tuple[str, str, Optional[str]]:
         """Create a markdown note and separate transcript file.
         
@@ -122,11 +123,12 @@ class NoteMaker:
             title: Optional meeting title
             metadata: Optional additional metadata
             user_notes: Optional notes written by user during recording
+            date: When the meeting happened, if processing it later. Defaults to now.
             
         Returns:
             Tuple of (note_path, transcript_path, error_message). error_message is None if no error occurred.
         """
-        now = datetime.now()
+        now = date or datetime.now()
         
         if title is None:
             title = f"Meeting {now.strftime('%Y-%m-%d %H:%M')}"

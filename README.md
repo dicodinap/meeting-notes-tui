@@ -182,12 +182,25 @@ python run.py --dev
 - `f` - Show in file manager
 - `,` - Settings
 - `A` - Audio Test (verify mic + system audio are working)
+- `R` - Retry failed recordings (shown when there are any)
 - `q` - Quit
 - `↑↓` or `j/k` - Navigate list
 
 **Recording:**
 - `s` - Stop and process
 - `x` - Cancel
+
+### Background processing
+
+Recordings are processed by a separate background process, so you can quit the app or close the terminal while a meeting is being transcribed. Each recording goes into a queue at `~/.config/meeting-notes/jobs.json` before processing starts, along with the title and notes you typed.
+
+If processing is interrupted, for example by a shutdown, it resumes the next time you open the app. A recording with no finished note is never deleted by the retention cleanup.
+
+To process recordings made before this feature existed, run:
+
+```bash
+venv/bin/python run.py --add recordings/2026-10-21-204722.wav
+```
 
 ### Settings
 

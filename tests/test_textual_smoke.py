@@ -156,3 +156,63 @@ async def test_system_level_meter_is_not_clipped(tmp_path, monkeypatch, term_hei
                 f"{term_height}-row terminal"
             )
         app.exit()
+
+
+@pytest.mark.asyncio
+async def test_app_reports_worker_progress_and_offers_retry(tmp_path, monkeypatch):
+    """The worker runs in another process, so the app has to notice its results."""
+    from meeting_notes import app as app_module
+    from meeting_notes.jobs import DONE, FAILED
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.chdir(tmp_path)
+    started = []
+    monkeypatch.setattr(app_module, "start_worker", lambda: started.append(True))
+    monkeypatch.setattr(app_module, "worker_running", lambda: True)
+
+    wav = tmp_path / "2026-10-21-204722.wav"
+    wav.write_bytes(b"x")
+    app = app_module.MeetingNotesApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._queue_recording(str(wav), "Planning", "notes")
+        await pilot.pause()
+        assert started == [True]
+        assert app.sub_title == "Processing 1 recording(s)"
+        assert app.check_action("retry_failed", ()) is False
+
+        app.jobs.update(str(wav), status=FAILED, error="out of memory")
+        app._poll_jobs()
+        await pilot.pause()
+        assert app.check_action("retry_failed", ()) is True
+        assert "Error processing: out of memory" in [n.message for n in app._notifications]
+
+        await pilot.press("R")
+        await pilot.pause()
+        assert app.jobs.all()[0].status == "pending"
+        assert app.check_action("retry_failed", ()) is False
+
+        app.jobs.update(str(wav), status=DONE, note_path="/notes/planning.md")
+        app._poll_jobs()
+        await pilot.pause()
+        assert "✓ Note created: planning.md" in [n.message for n in app._notifications]
+        assert app.sub_title == "Keyboard-driven meeting recorder"
+
+        app.exit()
+
+
+@pytest.mark.asyncio
+async def test_failed_stop_does_not_queue_a_missing_recording(tmp_path, monkeypatch):
+    from meeting_notes import app as app_module
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(app_module, "start_worker", lambda: pytest.fail("worker started"))
+
+    app = app_module.MeetingNotesApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._queue_recording(str(tmp_path / "missing.wav"), None, "")
+        await pilot.pause()
+        assert app.jobs.all() == []
+        app.exit()

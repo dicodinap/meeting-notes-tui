@@ -1,31 +1,19 @@
-"""Tests for the recording retention cleanup logic.
-
-We test the underlying datetime-comparison logic rather than the
-MeetingNotesApp method directly, because the latter requires a full
-Textual app instance. The logic is small enough that the duplication
-is tolerable, and these tests document the expected behaviour clearly.
-
-If the implementation in app.py changes, this file is the spec.
-"""
+"""Tests for the recording retention cleanup logic."""
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from meeting_notes.jobs import expired_recordings
 
-def _cleanup(recordings_dir: Path, retention_days: int) -> list[str]:
-    """Mirror of MeetingNotesApp._cleanup_old_recordings, returns deleted names."""
-    if retention_days <= 0:
-        return []
-    if not recordings_dir.is_dir():
-        return []
-    cutoff = datetime.now() - timedelta(days=retention_days)
+
+def _cleanup(recordings_dir: Path, retention_days: int, keep: set[str] = frozenset()) -> list[str]:
+    """Run the cleanup as the app does, returning deleted names."""
     removed = []
-    for wav in recordings_dir.glob("*.wav"):
-        if datetime.fromtimestamp(wav.stat().st_mtime) < cutoff:
-            wav.unlink()
-            removed.append(wav.name)
+    for wav in expired_recordings(recordings_dir, retention_days, keep):
+        wav.unlink()
+        removed.append(wav.name)
     return removed
 
 
@@ -123,3 +111,15 @@ def test_retention_boundary_table(tmp_path, days_old, retention, should_delete):
     _set_age(f, days_old)
     _cleanup(tmp_path, retention_days=retention)
     assert f.exists() != should_delete
+
+
+def test_keeps_old_recording_without_a_finished_note(tmp_path):
+    protected = tmp_path / "unprocessed.wav"
+    expired = tmp_path / "processed.wav"
+    protected.write_bytes(b"x")
+    expired.write_bytes(b"x")
+    _set_age(protected, 90)
+    _set_age(expired, 90)
+
+    assert _cleanup(tmp_path, 30, {str(protected.resolve())}) == ["processed.wav"]
+    assert protected.exists()

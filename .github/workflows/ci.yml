@@ -67,4 +67,6 @@ jobs:
             tests/test_mix_gains.py \
             tests/test_setup_health.py \
             tests/test_meeting_routing.py \
-            tests/test_notion_export.py
+            tests/test_notion_export.py \
+            tests/test_jobs.py \
+            tests/test_worker.py

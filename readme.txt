@@ -151,9 +151,10 @@ agree.
 
 STEP 6 - OBSIDIAN AND NOTION PIPELINE (OPTIONAL)
 
-Skip this unless the user asked for it in step 1. After each recording, Claude
-turns the transcript into a structured note and sends it to the destinations
-they chose.
+Skip this unless the user asked for it in step 1. After each recording, the
+background worker has Claude turn the transcript into a structured note and
+send it to the destinations they chose. It runs whenever the config file below
+exists.
 
 Check that the claude command exists. If it is missing, see
 https://code.claude.com/docs/en/overview
@@ -198,6 +199,7 @@ The app needs a real terminal and audio, so hand this part to the user:
 
 The first transcription downloads the Whisper model (140 MB for base).
 Whisper on CPU is slow: expect about 30 minutes for an 85-minute meeting.
+Processing runs in the background, so they can quit the app while it works.
 
 Report to the user what you installed, what you configured, and anything you
 skipped. Remind them to tell people when a meeting is being recorded, since
@@ -210,6 +212,11 @@ TROUBLESHOOTING
   device under Settings. README.md has an Audio Configuration section.
 - "no kernel image is available" or other CUDA errors: set whisper_device to
   cpu in ~/.config/meeting-notes/config.yaml.
+- A recording failed: press R in the app to retry. Finished steps are not
+  repeated. The queue is ~/.config/meeting-notes/jobs.json, and errors are in
+  errors.log in the same folder.
+- Recordings from before the queue existed: run
+  venv/bin/python run.py --add <file.wav>
 - Configuration lives in ~/.config/meeting-notes/config.yaml.
 - Relative paths such as recordings and transcripts resolve from the directory
   the app starts in. meeting-notes.sh always starts it in the repository root.
