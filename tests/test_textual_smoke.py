@@ -97,3 +97,62 @@ async def test_switching_providers_does_not_duplicate_widget_ids(tmp_path, monke
                 raise
 
         app.exit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("term_height", [40, 44, 48, 52])
+async def test_system_level_meter_is_not_clipped(tmp_path, monkeypatch, term_height):
+    """Regression test: the system-audio meter must actually be on screen.
+
+    The recording view's left column is a fixed-height, non-scrolling
+    Vertical. Its content used to need 31 rows, so on any terminal shorter
+    than ~52 rows Textual silently clipped the last two widgets — the
+    "System audio level" label and bar. A clipped meter is indistinguishable
+    from a flat one, which is precisely the failure it exists to catch:
+    the user sees no system-audio bar and assumes the meeting is being
+    captured.
+    """
+    from textual.app import App, ComposeResult
+    from textual.widgets import Static
+
+    from meeting_notes.app import RecordingView
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    # Worst realistic case: the device panel is 3 lines (combined mode with
+    # two long device names), which is what pushes the column over.
+    device_info = (
+        "🎤🔊 Microphone + System Audio\n"
+        "Mic: Raptor Lake-P/U/H cAVS Digital Microphone\n"
+        "System: Raptor Lake-P/U/H cAVS Speaker (monitor, auto-picked)"
+    )
+
+    class _Probe(App):
+        CSS = MeetingNotesApp.CSS
+
+        def compose(self) -> ComposeResult:
+            yield RecordingView()
+
+        def on_mount(self) -> None:
+            self.query_one("#audio-device-info", Static).update(device_info)
+            self.query_one("#audio-sources-list", Static).update(
+                "⚠ Nothing routing to the captured sink right now"
+            )
+
+    app = _Probe()
+    async with app.run_test(size=(160, term_height)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        visible = {
+            w.id
+            for w in app.screen._compositor.visible_widgets
+            if getattr(w, "id", None)
+        }
+        for widget_id in ("level-meter-bar", "system-level-meter-label",
+                          "system-level-meter-bar"):
+            assert widget_id in visible, (
+                f"#{widget_id} is clipped out of the recording view at a "
+                f"{term_height}-row terminal"
+            )
+        app.exit()

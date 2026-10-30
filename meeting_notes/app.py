@@ -610,8 +610,12 @@ class MeetingNotesApp(App):
     #recording-left-column {
         width: 40%;
         height: 100%;
-        padding: 2;
+        padding: 1 2;
         align: center top;
+        /* The system-audio meter lives at the bottom of this column. If the
+           column ever runs out of rows it must scroll, not silently clip —
+           a hidden meter reads exactly like a flat one. */
+        overflow-y: auto;
     }
     
     #recording-right-column {
@@ -624,7 +628,7 @@ class MeetingNotesApp(App):
         text-align: center;
         text-style: bold;
         color: $error;
-        margin: 2 0;
+        margin: 1 0;
         content-align: center middle;
     }
     
@@ -632,16 +636,16 @@ class MeetingNotesApp(App):
         text-align: center;
         text-style: bold;
         color: $text;
-        height: 5;
+        height: 1;
         content-align: center middle;
-        margin: 2 0;
+        margin: 1 0;
     }
     
     #audio-device-info {
         text-align: center;
         color: $text-muted;
-        margin: 2 0;
-        padding: 1;
+        margin: 1 0;
+        padding: 0 1;
         background: $panel;
         border: solid $primary;
         width: 100%;
@@ -1469,6 +1473,13 @@ class MeetingNotesApp(App):
                 self.notify(f"Failed to stop recording: {e}", severity="error")
                 self.is_recording = False
     
+    def _notify_safe(self, message: str, severity: str = "information") -> None:
+        """Call self.notify from a thread, ignoring errors if the app is no longer running."""
+        try:
+            self.call_from_thread(self.notify, message, severity=severity)
+        except RuntimeError:
+            logger.info(f"[headless] {message}")
+
     @work(exclusive=True, thread=True)
     def process_recording(self, audio_path: str, meeting_title: Optional[str] = None, user_notes: str = "") -> None:
         """Process recording in background thread."""
@@ -1476,24 +1487,24 @@ class MeetingNotesApp(App):
         try:
             # Load Whisper model (if not already loaded)
             logger.info("Loading Whisper model")
-            self.call_from_thread(self.notify, f"Loading Whisper {self.config.whisper_model} model...", severity="information")
+            self._notify_safe(f"Loading Whisper {self.config.whisper_model} model...")
             self.transcriber.load_model()
-            
+
             # Transcribe
             logger.info("Starting transcription")
-            self.call_from_thread(self.notify, "Transcribing audio (this may take a few minutes)...", severity="information")
+            self._notify_safe("Transcribing audio (this may take a few minutes)...")
             result = self.transcriber.transcribe(audio_path)
-            
+
             word_count = len(result.text.split())
             logger.info(f"Transcription complete: {word_count} words")
-            self.call_from_thread(self.notify, f"✓ Transcribed {word_count} words. Generating AI summary...", severity="information")
-            
+            self._notify_safe(f"✓ Transcribed {word_count} words. Generating AI summary...")
+
             # Format transcript
             formatted = '\n\n'.join([
                 f'**[{int(seg.start // 60):02d}:{int(seg.start % 60):02d}]** {seg.text.strip()}'
                 for seg in result.segments
             ])
-            
+
             # Generate note with AI summary (pass custom title if provided)
             logger.info("Creating note with AI summary")
             duration = result.segments[-1].end if result.segments else 0
@@ -1504,25 +1515,28 @@ class MeetingNotesApp(App):
                 title=meeting_title,
                 user_notes=user_notes
             )
-            
+
             # Update UI
             if ai_error:
                 logger.warning(f"Note created but AI summarization failed: {ai_error}")
-                self.call_from_thread(self.notify, f"⚠ Note created but {ai_error}", severity="warning")
-                self.call_from_thread(self.notify, f"Check ~/.config/meeting-notes/errors.log for details", severity="warning")
+                self._notify_safe(f"⚠ Note created but {ai_error}", severity="warning")
+                self._notify_safe("Check ~/.config/meeting-notes/errors.log for details", severity="warning")
             else:
                 logger.info(f"Note created successfully: {note_path}")
                 logger.info(f"Transcript saved: {transcript_path}")
-                self.call_from_thread(self.notify, f"✓ Note created: {Path(note_path).name}", severity="information")
-            self.call_from_thread(self.load_meetings)
-            
+                self._notify_safe(f"✓ Note created: {Path(note_path).name}")
+            try:
+                self.call_from_thread(self.load_meetings)
+            except RuntimeError:
+                pass
+
             # Clear status back to idle after successful processing
             self._write_status_file("idle")
-            
+
         except Exception as e:
             logger.error(f"Error processing recording: {e}", exc_info=True)
-            self.call_from_thread(self.notify, f"Error processing: {e}", severity="error")
-            
+            self._notify_safe(f"Error processing: {e}", severity="error")
+
             # Clear status back to idle after error
             self._write_status_file("idle")
     
