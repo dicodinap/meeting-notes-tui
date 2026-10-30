@@ -1,8 +1,18 @@
 # Copy to ~/.config/meeting-notes/process-meeting.conf and edit.
 # This file is sourced by bash and stays out of the repository.
+# Restrict it if it holds a token: chmod 600 process-meeting.conf
 
-# Vault root. Notes land in $VAULT_ROOT/meetings/<folder> or $VAULT_ROOT/classes/<folder>.
+# Where notes go: "obsidian", "notion", or both.
+DESTINATIONS=("obsidian")
+
+# Obsidian: vault root. Notes land in $VAULT_ROOT/meetings/<folder> or $VAULT_ROOT/classes/<folder>.
 VAULT_ROOT="$HOME/Documents/vault"
+
+# Notion: every note becomes a new page under this page (URL or ID), which must
+# be shared with your connection. NOTION_TOKEN can be set here or in your
+# environment.
+# NOTION_PARENT_PAGE="https://www.notion.so/your-page-id"
+# NOTION_TOKEN="your-token"
 
 # Must match notes_dir in ~/.config/meeting-notes/config.yaml
 NOTES_DIR="$HOME/Documents/meeting-notes/notes"

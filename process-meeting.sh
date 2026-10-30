@@ -1,5 +1,5 @@
 #!/bin/bash
-# Pipeline: note/transcript -> Claude Code CLI -> Obsidian vault
+# Pipeline: note/transcript -> Claude Code CLI -> Obsidian vault and/or Notion
 #
 # Optional. Requires the `claude` CLI, and sends the transcript to Claude.
 # Configure it in ~/.config/meeting-notes/process-meeting.conf
@@ -12,16 +12,43 @@ if [ ! -f "$CONF_FILE" ]; then
     exit 1
 fi
 
+REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+
+DESTINATIONS=("obsidian")
 VAULT_ROOT=""
 NOTES_DIR="$HOME/Documents/meeting-notes/notes"
+NOTION_TOKEN="${NOTION_TOKEN:-}"
+NOTION_PARENT_PAGE=""
 ROUTES=()
 # shellcheck source=/dev/null
 source "$CONF_FILE"
 
-if [ -z "$VAULT_ROOT" ] || [ "${#ROUTES[@]}" -eq 0 ]; then
-    echo "Error: set VAULT_ROOT and at least one entry in ROUTES in $CONF_FILE"
+if [ "${#ROUTES[@]}" -eq 0 ]; then
+    echo "Error: add at least one entry to ROUTES in $CONF_FILE"
     exit 1
 fi
+
+# Fail before calling Claude, not after
+for destination in "${DESTINATIONS[@]}"; do
+    case "$destination" in
+        obsidian)
+            if [ -z "$VAULT_ROOT" ]; then
+                echo "Error: set VAULT_ROOT in $CONF_FILE"
+                exit 1
+            fi
+            ;;
+        notion)
+            if [ -z "$NOTION_TOKEN" ] || [ -z "$NOTION_PARENT_PAGE" ]; then
+                echo "Error: set NOTION_TOKEN and NOTION_PARENT_PAGE in $CONF_FILE"
+                exit 1
+            fi
+            ;;
+        *)
+            echo "Error: unknown destination '$destination' in $CONF_FILE"
+            exit 1
+            ;;
+    esac
+done
 
 if ! command -v claude &> /dev/null; then
     echo "Error: the claude CLI is not installed."
@@ -143,12 +170,6 @@ if [ -z "$KIND" ]; then
     FOLDER="$route_folder"
 fi
 
-if [ "$KIND" = "class" ]; then
-    BASE_DIR="$VAULT_ROOT/classes"
-else
-    BASE_DIR="$VAULT_ROOT/meetings"
-fi
-
 # Fallback title if Claude didn't produce one
 if [ -z "$TITLE" ]; then
     TITLE="$(date +%Y-%m-%d) - $KIND"
@@ -157,13 +178,39 @@ fi
 # Content starts after the first --- separator
 CONTENT=$(printf '%s\n' "$RESPONSE" | sed '1,/^---$/d')
 
-mkdir -p "$BASE_DIR/$FOLDER"
-OUTPUT_FILE="$BASE_DIR/$FOLDER/${TITLE}.md"
-
-printf '%s\n' "$CONTENT" > "$OUTPUT_FILE"
-
 echo ""
 echo "✓ Type   : $KIND"
 echo "✓ Folder : $FOLDER"
 echo "✓ Title  : $TITLE"
-echo "✓ Saved  : $OUTPUT_FILE"
+
+# One destination failing must not lose the note in the others
+FAILED=0
+for destination in "${DESTINATIONS[@]}"; do
+    case "$destination" in
+        obsidian)
+            if [ "$KIND" = "class" ]; then
+                BASE_DIR="$VAULT_ROOT/classes"
+            else
+                BASE_DIR="$VAULT_ROOT/meetings"
+            fi
+            mkdir -p "$BASE_DIR/$FOLDER"
+            OUTPUT_FILE="$BASE_DIR/$FOLDER/${TITLE}.md"
+            printf '%s\n' "$CONTENT" > "$OUTPUT_FILE"
+            echo "✓ Saved  : $OUTPUT_FILE"
+            ;;
+        notion)
+            PYTHON="$REPO_DIR/venv/bin/python"
+            [ -x "$PYTHON" ] || PYTHON=python3
+            # Run from the repo: python -m would otherwise import from the caller's directory
+            if NOTION_URL=$(printf '%s\n' "$CONTENT" | (cd "$REPO_DIR" && NOTION_TOKEN="$NOTION_TOKEN" \
+                "$PYTHON" -m meeting_notes.notion_export --title "$TITLE" --parent "$NOTION_PARENT_PAGE")); then
+                echo "✓ Notion : $NOTION_URL"
+            else
+                echo "⚠ Notion export failed"
+                FAILED=1
+            fi
+            ;;
+    esac
+done
+
+exit "$FAILED"

@@ -4,7 +4,7 @@ A local, privacy-focused AI meeting notetaker for Linux with a keyboard-driven T
 
 Based on [jamespember/omascribe](https://github.com/jamespember/omascribe).
 
-**Using a coding agent?** Clone the repo and ask it to follow [`readme.txt`](readme.txt). It covers the full setup, including the optional Obsidian pipeline.
+**Using a coding agent?** Clone the repo and ask it to follow [`readme.txt`](readme.txt). It covers the full setup, including the optional Obsidian and Notion pipeline.
 
 ## Features
 

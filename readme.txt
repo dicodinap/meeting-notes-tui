@@ -12,8 +12,8 @@ RULES
 
 - Linux only, with PipeWire or PulseAudio.
 - Get the user's approval before running sudo or installing system packages.
-- Never ask the user to paste an API key into the chat. Never print a key,
-  and never write one to a file inside this repository.
+- Never ask the user to paste an API key or Notion token into the chat. Never
+  print one, and never write one to a file inside this repository.
 - Do not run setup.sh, setup_local.sh or setup_cloud.sh. They wait for
   keyboard input, and the steps below replace them.
 - If ~/.config/meeting-notes/config.yaml already exists, show the user what
@@ -36,8 +36,9 @@ Ask these together, then continue without further questions.
    the CPU. It is the default and works everywhere.
 3. Whisper model, if they care: tiny, base (default), small, medium or large.
    Larger is more accurate but slower.
-4. Obsidian pipeline (step 6), yes or no. It needs the Claude Code CLI and
-   sends transcripts to Claude.
+4. Note pipeline (step 6): send structured notes to Obsidian, Notion, both or
+   neither. It needs the Claude Code CLI and sends transcripts to Claude. Notion
+   also receives the full transcript.
 
 
 STEP 2 - SYSTEM PACKAGES
@@ -148,10 +149,11 @@ section of README.md. Do not edit their desktop configuration unless they
 agree.
 
 
-STEP 6 - OBSIDIAN PIPELINE (OPTIONAL)
+STEP 6 - OBSIDIAN AND NOTION PIPELINE (OPTIONAL)
 
-Skip this unless the user asked for it in step 1. After each recording it
-files a structured note into their vault.
+Skip this unless the user asked for it in step 1. After each recording, Claude
+turns the transcript into a structured note and sends it to the destinations
+they chose.
 
 Check that the claude command exists. If it is missing, see
 https://code.claude.com/docs/en/overview
@@ -161,13 +163,29 @@ https://code.claude.com/docs/en/overview
     cp process-meeting.conf.example "$conf_dir/process-meeting.conf"
 
 Edit that copy:
-- VAULT_ROOT: the absolute path to their vault.
+- DESTINATIONS: ("obsidian"), ("notion") or ("obsidian" "notion").
+- VAULT_ROOT: the absolute path to their vault. Only needed for Obsidian.
 - NOTES_DIR: must match notes_dir from step 4.
 - ROUTES: ask how they organize their vault, and write one entry per folder.
   Each folder description is what Claude uses to choose the destination, so
   be specific.
 
 Personal details belong in this config file, never in process-meeting.sh.
+
+Notion only. Ask the user to do these themselves:
+1. Create an internal connection in the Notion Developer portal
+   (https://developers.notion.com). Creating one requires being a Workspace
+   Owner. The connection needs the insert content capability.
+2. Open the Notion page that should hold the notes, open the ... menu, choose
+   Add connections, and select the connection. Skipping this causes a 404.
+3. In their own editor, set NOTION_PARENT_PAGE and NOTION_TOKEN in the config
+   file, or export NOTION_TOKEN from their shell startup file.
+
+Then restrict the file:
+
+    chmod 600 "$conf_dir/process-meeting.conf"
+
+Every note becomes a new page under that one parent page.
 
 
 STEP 7 - FINISH
