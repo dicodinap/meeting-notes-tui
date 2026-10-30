@@ -2,6 +2,10 @@
 
 A local, privacy-focused AI meeting notetaker for Linux with a keyboard-driven TUI. Record meetings, transcribe with Whisper, and generate summaries with your choice of local or cloud LLM.
 
+Based on [jamespember/omascribe](https://github.com/jamespember/omascribe).
+
+**Using a coding agent?** Clone the repo and ask it to follow [`readme.txt`](readme.txt). It covers the full setup, including the optional Obsidian pipeline.
+
 ## Features
 
 - **Keyboard-driven TUI** - Lazygit-inspired interface, no mouse required
@@ -22,8 +26,8 @@ The easiest way to get started:
 
 ```bash
 # Clone the repository
-git clone https://github.com/jamespember/meeting-notes.git
-cd meeting-notes
+git clone https://github.com/dicodinap/meeting-notes-tui.git
+cd meeting-notes-tui
 
 # Run the setup script
 ./setup.sh

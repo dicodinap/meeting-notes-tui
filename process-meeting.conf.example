@@ -1,0 +1,15 @@
+# Copy to ~/.config/meeting-notes/process-meeting.conf and edit.
+# This file is sourced by bash and stays out of the repository.
+
+# Vault root. Notes land in $VAULT_ROOT/meetings/<folder> or $VAULT_ROOT/classes/<folder>.
+VAULT_ROOT="$HOME/Documents/vault"
+
+# Must match notes_dir in ~/.config/meeting-notes/config.yaml
+NOTES_DIR="$HOME/Documents/meeting-notes/notes"
+
+# One entry per destination folder: "kind|folder|what belongs there"
+# kind is "meeting" or "class". The first entry is the fallback.
+ROUTES=(
+    "meeting|work|Work meetings: projects, planning, clients, deliverables"
+    "class|studies|University lectures and courses"
+)

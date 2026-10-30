@@ -80,5 +80,5 @@ ignore = [
 meeting-notes = "meeting_notes.app:run"
 
 [project.urls]
-Homepage = "https://github.com/jamespember/meeting-notes"
-Repository = "https://github.com/jamespember/meeting-notes"
+Homepage = "https://github.com/dicodinap/meeting-notes-tui"
+Repository = "https://github.com/dicodinap/meeting-notes-tui"

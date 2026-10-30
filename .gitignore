@@ -11,12 +11,14 @@ ENV/
 # Meeting notes output
 notes/
 recordings/
+transcripts/
 /tmp/
 .status
 
 # Config files (sensitive data)
 config.yaml
 config.yml
+process-meeting.conf
 .env
 .env.*
 *.key
